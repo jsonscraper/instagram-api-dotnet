@@ -1,0 +1,34 @@
+using JsonScraper.InstagramApi;
+using System.Text.Json;
+
+// Search music. GET /v2/search/music
+// dotnet run --project examples/endpoints/v2_search_music -- --help
+var query=new Dictionary<string,object?>{["query"]="apple", ["next_max_id"]=null, ["cache_timeout"]="60"};
+double timeout=30;int retries=0;string? output=null;
+try {
+ foreach(string arg in args) {
+  if(arg=="--help"){Console.WriteLine("Search music\nGET /v2/search/music\n\nEnvironment: JSONSCRAPER_INSTAGRAM_LICENSE_KEY\nCommon options: --timeout=30, --help\nQuery options:\n  --query=VALUE  Search query text.\n  --next_max_id=VALUE  Cursor for the next page. Use the next_max_id value from the previous response.\n  --cache_timeout=VALUE  Caching is disabled by default. Set a value greater than 0 to enable response caching for the specified number of seconds; repeated requests within this window will be served from \n\nValues omitted from the command use the public Postman sample defaults. Replace IDs/URLs with your own inputs. Each run makes one request; live requests may consume quota.");return;}
+  if(!arg.StartsWith("--")||!arg.Contains('='))throw new ArgumentException("Use --parameter=value or --help");
+  var pair=arg[2..].Split('=',2);
+  switch(pair[0]){
+   case "timeout":timeout=double.Parse(pair[1],System.Globalization.CultureInfo.InvariantCulture);break;
+   case "retries":retries=int.Parse(pair[1]);break;
+   case "output":output=pair[1];break;
+   default:if(!query.ContainsKey(pair[0]))throw new ArgumentException("Unknown parameter: "+pair[0]);query[pair[0]]=pair[1];break;
+  }
+ }
+ var key=Environment.GetEnvironmentVariable("JSONSCRAPER_INSTAGRAM_LICENSE_KEY");
+ if(string.IsNullOrWhiteSpace(key))throw new ArgumentException("Set JSONSCRAPER_INSTAGRAM_LICENSE_KEY before making a licensed request");
+ if(!double.IsFinite(timeout)||timeout<=0||retries<0||retries>5)throw new ArgumentException("Use a positive timeout and 0 to 5 retries");
+ using var cancellation=new CancellationTokenSource();
+ Console.CancelKeyPress+=(_,e)=>{e.Cancel=true;cancellation.Cancel();};
+ using var client=new Instagram(key,timeout:TimeSpan.FromSeconds(timeout),retries:retries);
+ var bytes=await client.RequestAsync("/v2/search/music",query,cancellation.Token);
+ if(output!=null){await File.WriteAllBytesAsync(output,bytes,cancellation.Token);return;}
+ using var response=JsonDocument.Parse(bytes);
+ if(!response.RootElement.TryGetProperty("status",out var status)||status.GetString()!="ok")throw new InvalidOperationException("The API returned an application error; inspect the response envelope");
+ if(response.RootElement.TryGetProperty("rate_limit_reached",out var limited)&&limited.ValueKind==JsonValueKind.True)throw new InvalidOperationException("License rate limit reached");
+ Console.WriteLine(JsonSerializer.Serialize(response.RootElement,new JsonSerializerOptions{WriteIndented=true}));
+}catch(APIException e){Console.Error.WriteLine($"HTTP {e.Status}. Check parameters, access and quota. Retry-After: {e.RetryAfter}");Environment.ExitCode=1;}
+catch(OperationCanceledException){Console.Error.WriteLine("Request cancelled");Environment.ExitCode=1;}
+catch(Exception e){Console.Error.WriteLine(e.Message);Environment.ExitCode=1;}
